@@ -8,23 +8,15 @@ terraform {
 }
 
 provider "aws" {
-  region = "ap-south-1"
+  region = "ap-south-1"   # change if needed
 }
 
-# AMI
-data "aws_ami" "amazon_linux" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
-  }
-}
+# Get available AZs dynamically
+data "aws_availability_zones" "available" {}
 
 # VPC
 resource "aws_vpc" "my_vpc" {
-  cidr_block           = "10.0.0.0/16"
+  cidr_block           = "10.20.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
 
@@ -34,73 +26,92 @@ resource "aws_vpc" "my_vpc" {
 }
 
 # IGW
-resource "aws_internet_gateway" "my_igw" {
+resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.my_vpc.id
-
-  tags = {
-    Name = "my-igw"
-  }
 }
 
-# Public Subnets 
-resource "aws_subnet" "public" {
-  count                   = 3
+# Public Subnets
+resource "aws_subnet" "public_1" {
   vpc_id                  = aws_vpc.my_vpc.id
-  cidr_block              = cidrsubnet("10.0.0.0/16", 8, count.index)
-  availability_zone       = element(["ap-south-1a","ap-south-1b","ap-south-1c"], count.index)
+  cidr_block              = "10.20.1.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
-
-  tags = {
-    Name = "public-subnet-${count.index}"
-  }
 }
 
-# Private Subnets 
-resource "aws_subnet" "private" {
-  count             = 3
+resource "aws_subnet" "public_2" {
+  vpc_id                  = aws_vpc.my_vpc.id
+  cidr_block              = "10.20.2.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[1]
+  map_public_ip_on_launch = true
+}
+
+resource "aws_subnet" "public_3" {
+  vpc_id                  = aws_vpc.my_vpc.id
+  cidr_block              = "10.20.3.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[2]
+  map_public_ip_on_launch = true
+}
+
+# Private Subnets
+resource "aws_subnet" "private_1" {
   vpc_id            = aws_vpc.my_vpc.id
-  cidr_block        = cidrsubnet("10.0.0.0/16", 8, count.index + 10)
-  availability_zone = element(["ap-south-1a","ap-south-1b","ap-south-1c"], count.index)
-
-  tags = {
-    Name = "private-subnet-${count.index}"
-  }
+  cidr_block        = "10.20.10.0/24"
+  availability_zone = data.aws_availability_zones.available.names[0]
 }
 
-# Elastic IP for NAT
+resource "aws_subnet" "private_2" {
+  vpc_id            = aws_vpc.my_vpc.id
+  cidr_block        = "10.20.11.0/24"
+  availability_zone = data.aws_availability_zones.available.names[1]
+}
+
+resource "aws_subnet" "private_3" {
+  vpc_id            = aws_vpc.my_vpc.id
+  cidr_block        = "10.20.12.0/24"
+  availability_zone = data.aws_availability_zones.available.names[2]
+}
+
+# Elastic IP
 resource "aws_eip" "nat" {
   domain = "vpc"
 }
 
-# NAT Gateway (in public subnet)
+# NAT Gateway
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
+  subnet_id     = aws_subnet.public_1.id
 
-  tags = {
-    Name = "my-nat"
-  }
+  depends_on = [aws_internet_gateway.igw]
 }
 
 # Public Route Table
-resource "aws_route_table" "public_rt" {
+resource "aws_route_table" "public" {
   vpc_id = aws_vpc.my_vpc.id
 
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.my_igw.id
+    gateway_id = aws_internet_gateway.igw.id
   }
 }
 
-# Public Route Table Association
-resource "aws_route_table_association" "public_assoc" {
-  count          = 3
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public_rt.id
+# Public Associations
+resource "aws_route_table_association" "public_1" {
+  subnet_id      = aws_subnet.public_1.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_2" {
+  subnet_id      = aws_subnet.public_2.id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "public_3" {
+  subnet_id      = aws_subnet.public_3.id
+  route_table_id = aws_route_table.public.id
 }
 
 # Private Route Table
-resource "aws_route_table" "private_rt" {
+resource "aws_route_table" "private" {
   vpc_id = aws_vpc.my_vpc.id
 
   route {
@@ -109,42 +120,18 @@ resource "aws_route_table" "private_rt" {
   }
 }
 
-# Private Route Table Association
-resource "aws_route_table_association" "private_assoc" {
-  count          = 3
-  subnet_id      = aws_subnet.private[count.index].id
-  route_table_id = aws_route_table.private_rt.id
+# Private Associations
+resource "aws_route_table_association" "private_1" {
+  subnet_id      = aws_subnet.private_1.id
+  route_table_id = aws_route_table.private.id
 }
 
-# Security Group
-resource "aws_security_group" "my_sg" {
-  name   = "terraform-sg"
-  vpc_id = aws_vpc.my_vpc.id
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] 
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+resource "aws_route_table_association" "private_2" {
+  subnet_id      = aws_subnet.private_2.id
+  route_table_id = aws_route_table.private.id
 }
 
-# EC2 (in public subnet)
-resource "aws_instance" "my_server" {
-  ami                         = data.aws_ami.amazon_linux.id
-  instance_type               = "t3.micro"
-  subnet_id                   = aws_subnet.public[0].id
-  vpc_security_group_ids      = [aws_security_group.my_sg.id]
-  associate_public_ip_address = true
-
-  tags = {
-    Name = "Terraform-Server"
-  }
+resource "aws_route_table_association" "private_3" {
+  subnet_id      = aws_subnet.private_3.id
+  route_table_id = aws_route_table.private.id
 }
